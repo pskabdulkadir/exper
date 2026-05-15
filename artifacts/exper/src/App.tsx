@@ -7,7 +7,7 @@ import React, { useState, useRef, useEffect } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Camera, Activity, Zap, Droplet, Box, Settings, AlertTriangle, Info, Maximize2, Shield, ClipboardList, Cpu, RefreshCcw, X, Download, Lock, Wifi, Battery, Languages, ArrowRight, Volume2, VolumeX, Trash2, History, User, Globe } from 'lucide-react';
 import CameraView, { CameraViewRef } from './components/CameraView';
-import { identifyVehicle, analyzeCondition, VehicleDiagnosis, identifyVehicleMultiAngle, preLoadModels, checkConnectivity, hasApiKey, getVinDetails, verifyAngle, generateDetailedAiReport, getEngineStatus, HEAVY_VEHICLES } from './lib/gemini';
+import { identifyVehicle, analyzeCondition, VehicleDiagnosis, identifyVehicleMultiAngle, preLoadModels, checkConnectivity, hasApiKey, getVinDetails, getNHTSAVehicleData, getNHTSARecalls, NHTSAVehicleData, NHTSARecall, verifyAngle, generateDetailedAiReport, getEngineStatus, HEAVY_VEHICLES } from './lib/gemini';
 import { jsPDF } from 'jspdf';
 import autoTable from 'jspdf-autotable';
 import { useSensors } from './hooks/useSensors';
@@ -96,6 +96,8 @@ export default function App() {
   const [vinNumber, setVinNumber] = useState<string>('');
   const [vinReport, setVinReport] = useState<any>(null);
   const [isSearchingVin, setIsSearchingVin] = useState(false);
+  const [nhtsaVehicleData, setNhtsaVehicleData] = useState<NHTSAVehicleData | null>(null);
+  const [nhtsaRecalls, setNhtsaRecalls] = useState<NHTSARecall[]>([]);
   const [isVerifyingAngle, setIsVerifyingAngle] = useState(false);
   const [expertReportData, setExpertReportData] = useState<{
     damagePercentage: number;
@@ -201,25 +203,45 @@ export default function App() {
     try {
         const report = await getVinDetails(vinNumber, language);
         setVinReport(report);
-        
-        // Auto-fill manual fields from VIN report
-        if (report && report.sections) {
-          const generalInfo = report.sections.find((s: any) => s.name.includes("GENEL") || s.name.includes("GENERAL"));
-          if (generalInfo) {
-            const manufacturer = generalInfo.items.find((i: any) => i.label.includes("Üretici") || i.label.includes("Manufacturer"));
-            const modelCode = generalInfo.items.find((i: any) => i.label.includes("Model"));
-            const yearStr = generalInfo.items.find((i: any) => i.label.includes("Yıl") || i.label.includes("Year"));
-            
-            if (manufacturer) setManualBrand(manufacturer.value);
-            if (modelCode) setManualModel(modelCode.value);
-            if (yearStr) {
-                const yearMatch = yearStr.value.match(/\d{4}/);
-                if (yearMatch) setManualYear(yearMatch[0]);
+
+        // NHTSA verisi varsa tüm alanları otomatik doldur
+        if ((report as any)?.nhtsaData) {
+            const nd = (report as any).nhtsaData as NHTSAVehicleData;
+            setNhtsaVehicleData(nd);
+            if (nd.make)  setManualBrand(nd.make);
+            if (nd.model) setManualModel(nd.model);
+            if (nd.year)  setManualYear(nd.year);
+
+            // Geri çağırma kayıtlarını arka planda yükle
+            if (nd.make && nd.model && nd.year) {
+                const recalls = await getNHTSARecalls(nd.make, nd.model, nd.year);
+                setNhtsaRecalls(recalls);
+                const recallMsg = recalls.length > 0
+                    ? (language === 'TR'
+                        ? ` ${recalls.length} geri çağırma kaydı tespit edildi.`
+                        : ` ${recalls.length} recall record(s) found.`)
+                    : (language === 'TR' ? ' Geri çağırma kaydı yok.' : ' No recalls found.');
+                speak((t['vin.success'] || 'VIN doğrulandı.') + recallMsg);
+            } else {
+                speak(t['vin.success']);
             }
-          }
+        } else {
+            // Yerel WMI tablosu sonuçlarından otomatik doldur
+            setNhtsaVehicleData(null);
+            setNhtsaRecalls([]);
+            if (report?.sections) {
+                const g = report.sections.find((s: any) => s.name.includes('GENEL') || s.name.includes('GENERAL'));
+                if (g) {
+                    const mfr = g.items.find((i: any) => i.label.includes('Üretici') || i.label.includes('Manufacturer'));
+                    const mdl = g.items.find((i: any) => i.label.includes('Model'));
+                    const yr  = g.items.find((i: any) => i.label.includes('Yıl') || i.label.includes('Year'));
+                    if (mfr) setManualBrand(mfr.value);
+                    if (mdl) setManualModel(mdl.value);
+                    if (yr) { const m = yr.value.match(/\d{4}/); if (m) setManualYear(m[0]); }
+                }
+            }
+            speak(t['vin.success']);
         }
-        
-        speak(t['vin.success']);
     } catch (e) {
         speak(t['vin.failed_msg']);
     } finally {
@@ -549,295 +571,537 @@ export default function App() {
   const handleDownloadReport = () => {
     if (!diagnosis) return;
 
-    const doc = new jsPDF();
+    const doc = new jsPDF() as any;
     const pageWidth = doc.internal.pageSize.getWidth();
     const pageHeight = doc.internal.pageSize.getHeight();
-    const margin = 15;
+    const margin = 12;
+    const isEN = language !== 'TR';
+    const reportNo = Math.floor(Math.random() * 9000000) + 1000000;
 
-    // Helper functions for PDF styling
-    const drawSectionHeader = (title: string, y: number) => {
-      doc.setFillColor(80, 80, 80);
-      doc.rect(margin, y, 60, 8, 'F');
+    // ── Yardımcı: Üst başlık ──────────────────────────────────────────────
+    const drawHeader = (title: string, sub: string) => {
+      doc.setFillColor(18, 18, 28);
+      doc.rect(0, 0, pageWidth, 22, 'F');
+      doc.setFillColor(234, 88, 12);
+      doc.rect(0, 22, pageWidth, 1.5, 'F');
       doc.setTextColor(255, 255, 255);
       doc.setFont('helvetica', 'bold');
       doc.setFontSize(10);
-      doc.text(title, margin + 2, y + 5.5);
+      doc.text('AKN GLOBAL FORENSICS', margin, 9);
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text('Neural Vehicle Inspection System v4.5', margin, 15);
+      doc.setFont('helvetica', 'bold');
+      doc.setFontSize(8.5);
+      doc.text(title, pageWidth - margin, 9, { align: 'right' });
+      doc.setFont('helvetica', 'normal');
+      doc.setFontSize(6.5);
+      doc.text(sub, pageWidth - margin, 15, { align: 'right' });
       doc.setTextColor(0, 0, 0);
     };
 
-    const drawVerticalTitle = (title: string) => {
-      doc.saveGraphicsState();
-      doc.setFontSize(24);
-      doc.setTextColor(200, 200, 200);
+    // ── Yardımcı: Alt bilgi ───────────────────────────────────────────────
+    const drawFooter = (n: number) => {
+      doc.setFontSize(6.5);
+      doc.setTextColor(130, 130, 130);
+      doc.text(`${isEN ? 'Page' : 'Sayfa'} ${n}`, pageWidth / 2, pageHeight - 6, { align: 'center' });
+      doc.text('AKN Exper | TF.js + NHTSA API', margin, pageHeight - 6);
+      doc.text(new Date().toLocaleDateString(), pageWidth - margin, pageHeight - 6, { align: 'right' });
+      doc.setTextColor(0, 0, 0);
+    };
+
+    // ── Yardımcı: Bölüm başlığı ───────────────────────────────────────────
+    const sec = (title: string, y: number): number => {
+      doc.setFillColor(234, 88, 12);
+      doc.rect(margin, y, 2.5, 7, 'F');
+      doc.setFillColor(245, 245, 248);
+      doc.rect(margin + 2.5, y, pageWidth - margin * 2 - 2.5, 7, 'F');
       doc.setFont('helvetica', 'bold');
-      doc.text(title, pageWidth - 10, 40, { angle: -90 });
-      doc.restoreGraphicsState();
+      doc.setFontSize(7.5);
+      doc.setTextColor(25, 25, 35);
+      doc.text(title.toUpperCase(), margin + 5, y + 5);
+      doc.setTextColor(0, 0, 0);
+      return y + 10;
     };
 
-    const drawQRCodePlaceholder = (x: number, y: number, size: number) => {
-      doc.setDrawColor(0);
-      doc.setLineWidth(0.5);
+    // ── Yardımcı: Skor çubuğu ─────────────────────────────────────────────
+    const scoreBar = (label: string, score: number, y: number, col?: [number,number,number]) => {
+      const c: [number,number,number] = col || (score >= 80 ? [34,197,94] : score >= 60 ? [234,179,8] : [239,68,68]);
+      doc.setFontSize(7);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(40, 40, 40);
+      doc.text(label, margin, y);
+      doc.setFillColor(215, 215, 215);
+      doc.rect(margin + 58, y - 4, 88, 5, 'F');
+      doc.setFillColor(...c);
+      doc.rect(margin + 58, y - 4, 88 * (Math.min(100, Math.max(0, score)) / 100), 5, 'F');
+      doc.setFont('helvetica', 'bold');
+      doc.setTextColor(...c);
+      doc.text(`${Math.round(score)}%`, margin + 150, y);
+      doc.setFont('helvetica', 'normal');
+      doc.setTextColor(0, 0, 0);
+    };
+
+    // ── QR deseni ─────────────────────────────────────────────────────────
+    const qr = (x: number, y: number, size: number) => {
+      doc.setDrawColor(0); doc.setLineWidth(0.4);
       doc.rect(x, y, size, size);
-      // Basic pattern simulation
-      for(let i=0; i<size; i+=5) {
-        for(let j=0; j<size; j+=5) {
-          if((i+j)%10 === 0) {
-            doc.setFillColor(0, 0, 0);
-            doc.rect(x+i, y+j, 2, 2, 'F');
-          }
-        }
-      }
-      doc.setFontSize(6);
-      doc.text(t['report.scan_qr'], x, y + size + 4);
+      for (let i = 0; i < size; i += 3)
+        for (let j = 0; j < size; j += 3)
+          if ((i + j) % 6 === 0) { doc.setFillColor(0,0,0); doc.rect(x+i, y+j, 2, 2, 'F'); }
     };
 
-    // --- PAGE 1: COVER ---
-    drawVerticalTitle(t['report.expert_title']);
-    drawQRCodePlaceholder(pageWidth - 45, 15, 30);
-    
-    // Summary Info Table
-    const reportNo = Math.floor(Math.random() * 9000000) + 1000000;
-    drawSectionHeader(t['report.info_expertise'], 25);
+    // ── Puanlar ───────────────────────────────────────────────────────────
+    const bodyScore = expertReportData
+      ? Math.max(0, Math.min(100, Math.round(100 - expertReportData.damagePercentage)))
+      : ((diagnosis as any).conditionScore || 75);
+    const mechScore: number | null = (analysisResult && (analysisResult as any).overallHealth != null)
+      ? Math.round((analysisResult as any).overallHealth * 100) : null;
+    const elecScore: number | null = (analysisResult && (analysisResult as any).electricalHealth != null)
+      ? Math.round((analysisResult as any).electricalHealth * 100) : null;
+    const confScore = Math.round((diagnosis.confidenceScore || 0.75) * 100);
+    const scores = ([bodyScore, mechScore, elecScore] as (number|null)[]).filter((s): s is number => s !== null);
+    const overall = scores.length > 0 ? Math.round(scores.reduce((a,b) => a+b,0) / scores.length) : bodyScore;
+    const verdict = overall >= 90 ? (isEN ? 'EXCELLENT' : 'MÜKEMMEL')
+                  : overall >= 75 ? (isEN ? 'GOOD' : 'İYİ')
+                  : overall >= 60 ? (isEN ? 'FAIR' : 'ORTA')
+                  : (isEN ? 'POOR' : 'KÖTÜ');
+    const vColor: [number,number,number] = overall >= 90 ? [34,197,94] : overall >= 75 ? [234,179,8] : overall >= 60 ? [249,115,22] : [239,68,68];
+
+    const brand = nhtsaVehicleData?.make || manualBrand || diagnosis.model || '';
+    const model = nhtsaVehicleData?.model || manualModel || diagnosis.objectName || '';
+    const year  = nhtsaVehicleData?.year  || manualYear  || diagnosis.year || '';
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 1 — KAPAK & ARAÇ BİLGİSİ
+    // ═══════════════════════════════════════════════════════════════════════
+    drawHeader(isEN ? 'VEHICLE INSPECTION REPORT' : 'ARAÇ EKSPERTİZ RAPORU', `#${reportNo}`);
+    qr(pageWidth - margin - 28, 26, 28);
+    let y = 28;
+
+    y = sec(isEN ? 'EXPERTISE INFO' : 'EKSPERTİZ BİLGİLERİ', y);
     autoTable(doc, {
-      startY: 33,
-      margin: { left: margin, right: 80 },
-      theme: 'grid',
-      headStyles: { fillColor: [240, 240, 240], textColor: [0, 0, 0], fontStyle: 'bold' },
+      startY: y, margin: { left: margin, right: margin + 33 }, theme: 'grid',
       body: [
-        [t['report.no'], reportNo.toString()],
-        [t['report.package'], ''],
-        [t['report.date'], new Date().toLocaleString()],
-        [t['report.mileage_start'], mileage || ''],
+        [isEN ? 'Report No'  : 'Rapor No',    reportNo.toString()],
+        [isEN ? 'Date/Time'  : 'Tarih/Saat',  new Date().toLocaleString()],
+        [isEN ? 'Mileage'    : 'Kilometre',   mileage ? `${parseInt(mileage).toLocaleString()} km` : '—'],
+        [isEN ? 'Package'    : 'Paket',        isEN ? 'Full Forensic Inspection' : 'Tam Forensik Ekspertiz'],
+        [isEN ? 'AI Engine'  : 'AI Motoru',    'AKN Neural v4.5 | TF.js + NHTSA'],
       ],
-      styles: { fontSize: 9, cellPadding: 2.5 }
+      styles: { fontSize: 7.5, cellPadding: 1.8 },
+      columnStyles: { 0: { cellWidth: 42, fillColor: [245,245,248], fontStyle: 'bold' } }
     });
 
-    // Bayi Bilgileri
-    drawSectionHeader(t['report.info_dealer'], 68);
+    y = (doc as any).lastAutoTable.finalY + 5;
+    y = sec(isEN ? 'VEHICLE IDENTIFICATION' : 'ARAÇ KİMLİK BİLGİLERİ', y);
+
+    const engineStr = nhtsaVehicleData
+      ? [nhtsaVehicleData.engineConfig, nhtsaVehicleData.engineCylinders ? nhtsaVehicleData.engineCylinders+' cyl' : '', nhtsaVehicleData.displacementL ? nhtsaVehicleData.displacementL+'L' : ''].filter(Boolean).join(' ')
+      : ((diagnosis.technicalSpecs as any)?.engineType || '—');
+
     autoTable(doc, {
-      startY: 76,
-      margin: { left: margin, right: 80 },
-      theme: 'grid',
+      startY: y, margin: { left: margin, right: margin }, theme: 'grid',
       body: [
-        [t['report.dealer_no'], ''],
-        [t['report.company'], ''],
-        [t['report.technician'], ''],
+        [isEN?'Brand':'Marka', brand.toUpperCase(), isEN?'Body Type':'Kasa Tipi', nhtsaVehicleData?.bodyClass || diagnosis.vehicleSubtype || '—'],
+        [isEN?'Model':'Model', model.toUpperCase(), isEN?'Drive':'Çekiş', nhtsaVehicleData?.driveType || '—'],
+        [isEN?'Year':'Yıl',   year,                 isEN?'Engine':'Motor',  engineStr || '—'],
+        [isEN?'VIN':'VIN',    vinNumber.toUpperCase() || '—', isEN?'Fuel':'Yakıt', nhtsaVehicleData?.fuelType || '—'],
+        [isEN?'Transmission':'Şanzıman', nhtsaVehicleData?.transmission || diagnosis.technicalSpecs?.transmission || '—',
+         isEN?'Manufacturer':'Üretici', nhtsaVehicleData?.manufacturer || brand || '—'],
       ],
-      styles: { fontSize: 9, cellPadding: 2.5 }
-    });
-
-    // Araç Bilgileri
-    drawSectionHeader(language === 'TR' ? 'Araç Bilgileri' : 'Vehicle Info', 108);
-    autoTable(doc, {
-      startY: 116,
-      margin: { left: margin, right: 20 },
-      theme: 'grid',
-      body: [
-        [language === 'TR' ? 'Marka' : 'Brand', (manualBrand || diagnosis.model || '').toUpperCase()],
-        [language === 'TR' ? 'Model' : 'Model', (manualModel || diagnosis.objectName || '').toUpperCase()],
-        [language === 'TR' ? 'Model Yılı' : 'Model Year', manualYear || diagnosis.year || ''],
-        [language === 'TR' ? 'Vites Tipi' : 'Transmission', diagnosis.technicalSpecs?.transmission || '-'],
-        [language === 'TR' ? 'Yakıt Türü' : 'Fuel Type', ''],
-        [language === 'TR' ? 'Plaka No' : 'License Plate', ''],
-        [language === 'TR' ? 'Motor No' : 'Engine No', ''],
-        [language === 'TR' ? 'Şasi No' : 'VIN', vinNumber || ''],
-      ],
-      styles: { fontSize: 9, cellPadding: 2.5 },
-      columnStyles: { 0: { cellWidth: 50, fillColor: [245, 245, 245], fontStyle: 'bold' } }
-    });
-
-    // Bottom info tables
-    autoTable(doc, {
-      startY: 230,
-      margin: { left: margin },
-      theme: 'grid',
-      head: [[language === 'TR' ? 'Kimlik Bilgileri' : 'Identity Info', language === 'TR' ? 'Alıcı Bilgileri' : 'Buyer Info', language === 'TR' ? 'Satıcı Bilgileri' : 'Seller Info', language === 'TR' ? 'Bayi Bilgileri' : 'Dealer Info']],
-      body: [
-        [language === 'TR' ? 'Adı Soyadı' : 'Name', '', '', ''],
-        [language === 'TR' ? 'TC / Vergi No' : 'ID No', '', '', ''],
-        [language === 'TR' ? 'İmza' : 'Signature', '\n\n', '\n\n', '\n\n']
-      ],
-      styles: { fontSize: 8 },
-      headStyles: { fillColor: [150, 150, 150], textColor: [255, 255, 255] }
-    });
-
-    doc.setFontSize(8);
-    doc.setTextColor(100, 100, 100);
-    doc.text('Bu rapor dijital olarak AKN Global Neural Forensics v4.5 tarafından oluşturulmuştur.', margin, pageHeight - 10);
-    doc.text('Sayfa 1', pageWidth / 2, pageHeight - 10, { align: 'center' });
-
-    // --- PAGE 2: IMAGES ---
-    doc.addPage();
-    drawVerticalTitle(language === 'TR' ? 'EKSPERTİZ FOTOĞRAFLARI' : 'EXPERTISE PHOTOS');
-    
-    let currentY = 20;
-    capturedImages.forEach((img, index) => {
-      const col = index % 2;
-      const row = Math.floor(index / 2);
-      const xPos = margin + (col * 90);
-      const yPos = currentY + (row * 70);
-      
-      if (yPos + 60 > pageHeight - 20) return;
-
-      try {
-        doc.addImage(img.data, 'JPEG', xPos, yPos, 80, 60);
-        doc.setFontSize(7);
-        doc.text(img.angle.toUpperCase(), xPos, yPos + 65);
-      } catch (e) {
-        console.error("Image PDF error", e);
+      styles: { fontSize: 7.5, cellPadding: 1.8 },
+      columnStyles: {
+        0: { cellWidth: 35, fillColor: [245,245,248], fontStyle: 'bold' },
+        2: { cellWidth: 35, fillColor: [245,245,248], fontStyle: 'bold' }
       }
     });
-    
-    doc.text('Sayfa 2', pageWidth / 2, pageHeight - 10, { align: 'center' });
 
-    // --- PAGE 3: BODY & PAINT ---
+    y = (doc as any).lastAutoTable.finalY + 5;
+    y = sec(isEN ? 'OVERALL ASSESSMENT' : 'GENEL DEĞERLENDİRME', y);
+    scoreBar(isEN ? 'Body / Paint Score'    : 'Kaporta / Boya Skoru', bodyScore, y + 6);
+    if (mechScore !== null) scoreBar(isEN ? 'Mechanical Score' : 'Mekanik Skor', mechScore, y + 15);
+    if (elecScore !== null) scoreBar(isEN ? 'Electrical Score' : 'Elektrik Skoru', elecScore, y + 24);
+    scoreBar(isEN ? 'Detection Confidence'  : 'Tespit Güveni', confScore, y + (mechScore!==null?(elecScore!==null?33:24):15), [100,120,220]);
+    y += (mechScore!==null?(elecScore!==null?43:34):25);
+
+    // Verdict rozeti
+    doc.setFillColor(...vColor);
+    doc.roundedRect(margin, y, 68, 11, 2, 2, 'F');
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(9.5);
+    doc.text(`${verdict}  —  ${overall} / 100`, margin + 3.5, y + 7.5);
+    doc.setTextColor(0,0,0);
+    y += 18;
+
+    y = sec(isEN ? 'PARTIES / SIGNATURES' : 'TARAFLAR / İMZALAR', y);
+    autoTable(doc, {
+      startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+      head: [[isEN?'Inspector':'Eksper', isEN?'Seller':'Satıcı', isEN?'Buyer':'Alıcı', isEN?'Dealer':'Bayi']],
+      body: [
+        [isEN?'Name':'Ad Soyad', '', '', ''],
+        [isEN?'ID/Tax':'TC/Vergi', '', '', ''],
+        [isEN?'Signature':'İmza', '\n\n', '\n\n', '\n\n'],
+      ],
+      styles: { fontSize: 7 },
+      headStyles: { fillColor: [50,50,60], textColor: [255,255,255] }
+    });
+    drawFooter(1);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 2 — EKSPERTİZ FOTOĞRAFLARI
+    // ═══════════════════════════════════════════════════════════════════════
     doc.addPage();
-    drawVerticalTitle(language === 'TR' ? 'KAPORTA BOYA TEST SONUÇLARI' : 'BODY PAINT TEST RESULTS');
-    
-    drawSectionHeader(language === 'TR' ? 'Detaylı Kaporta/Boya Analiz Listesi' : 'Detailed Body/Paint Analysis List', 20);
-    
+    drawHeader(isEN ? 'INSPECTION PHOTOS' : 'EKSPERTİZ FOTOĞRAFLARI', `#${reportNo}`);
+    y = 26;
+    if (capturedImages.length === 0) {
+      doc.setFontSize(9); doc.setTextColor(150,150,150);
+      doc.text(isEN ? 'No photos captured.' : 'Fotoğraf çekilmedi.', margin, y + 10);
+      doc.setTextColor(0,0,0);
+    } else {
+      capturedImages.forEach((img, i) => {
+        const col = i % 2; const row = Math.floor(i / 2);
+        const xp = margin + col * 95; const yp = y + row * 76;
+        if (yp + 72 > pageHeight - 14) return;
+        try {
+          doc.addImage(img.data, 'JPEG', xp, yp, 88, 66);
+          doc.setFillColor(18,18,28); doc.rect(xp, yp+66, 88, 7, 'F');
+          doc.setTextColor(255,255,255); doc.setFontSize(6); doc.setFont('helvetica','bold');
+          doc.text(img.angle.toUpperCase(), xp+3, yp+71);
+          doc.setTextColor(0,0,0);
+        } catch { /* skip */ }
+      });
+    }
+    drawFooter(2);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 3 — KAPORTA / BOYA ANALİZİ
+    // ═══════════════════════════════════════════════════════════════════════
+    doc.addPage();
+    drawHeader(isEN ? 'BODY & PAINT FORENSIC ANALYSIS' : 'KAPORTA BOYA FORENSİK ANALİZİ', `#${reportNo}`);
+    y = 26;
+    y = sec(isEN ? 'DETAILED BODY/PAINT REPORT' : 'DETAYLI KAPORTA/BOYA RAPORU', y);
+
     let bodyRows: any[] = [];
     if (diagnosis.bodyReport) {
       Object.keys(diagnosis.bodyReport).forEach(angle => {
-        diagnosis.bodyReport![angle].forEach(part => {
-          bodyRows.push([
-            part.partName, 
-            part.status, 
-            part.thickness ? `${part.thickness} μm` : 'N/A', 
-            part.notes
-          ]);
+        diagnosis.bodyReport![angle].forEach((part: any) => {
+          bodyRows.push([angle.toUpperCase(), part.partName, part.status, part.thickness ? `${part.thickness} µm` : '—', part.notes || '']);
         });
       });
     } else {
-      bodyRows = Object.entries((diagnosis.exteriorCondition || {}) as Record<string, string>).map(([part, cond]) => [part.toUpperCase(), cond.toUpperCase(), '', '']);
+      bodyRows = Object.entries((diagnosis.exteriorCondition || {}) as Record<string,string>)
+        .map(([p,c]) => ['—', p.toUpperCase(), c.toUpperCase(), '—', '']);
     }
-    
+
     autoTable(doc, {
-      startY: 30,
-      margin: { left: margin },
-      head: [[
-        language === 'TR' ? 'Parça Adı' : 'Part Name', 
-        language === 'TR' ? 'Durum' : 'Status', 
-        language === 'TR' ? 'Mikron' : 'Micron', 
-        language === 'TR' ? 'Uzman Notu' : 'Expert Note'
-      ]],
+      startY: y, margin: { left: margin, right: margin },
+      head: [[isEN?'Angle':'Açı', isEN?'Part':'Parça', isEN?'Status':'Durum', isEN?'Micron':'Mikron', isEN?'Expert Note':'Uzman Notu']],
       body: bodyRows,
-      styles: { fontSize: 7, cellPadding: 1.5 },
-      headStyles: { fillColor: [80, 80, 80], textColor: [255, 255, 255], fontStyle: 'bold' },
-      alternateRowStyles: { fillColor: [245, 245, 245] }
-    });
-
-    // Legend / Abbreviation Key
-    drawSectionHeader(language === 'TR' ? 'Kısaltma Anahtarı' : 'Abbreviation Key', (doc as any).lastAutoTable.finalY + 10);
-    autoTable(doc, {
-      startY: (doc as any).lastAutoTable.finalY + 18,
-      margin: { left: margin },
-      body: [
-        ['ORJ: Orijinal', 'BOY: Boyalı', 'LOK: Lokal Boyalı', 'DEG: Değişmiş'],
-        ['CIZ: Çizik', 'GOK: Göçük', 'MAC: Macunlu', 'KIR: Kırık/Çatlak']
-      ],
-      styles: { fontSize: 8, font: 'helvetica', fontStyle: 'bold' },
-      theme: 'plain',
-      columnStyles: { 
-        0: { cellWidth: 45 }, 1: { cellWidth: 45 }, 2: { cellWidth: 45 }, 3: { cellWidth: 45 }
-      }
-    });
-    
-    doc.text('Sayfa 3', pageWidth / 2, pageHeight - 10, { align: 'center' });
-
-    // --- PAGE 4: DETAILED AI ANALYSIS ---
-    doc.addPage();
-    drawVerticalTitle(language === 'TR' ? 'AI FORENSİK RAPOR DETAYI' : 'AI FORENSIC REPORT DETAIL');
-    
-    drawSectionHeader('PRO-AI ANALİZ VERİLERİ', 20);
-    autoTable(doc, {
-      startY: 30,
-      margin: { left: margin },
-      body: [
-        [t['tool.zebra'], diagnosis.advancedAnalysis?.zebraReflections || 'N/A'],
-        [t['tool.color'], diagnosis.advancedAnalysis?.spectroscopicColor || 'N/A'],
-        [t['tool.texture'], diagnosis.advancedAnalysis?.textureAnalysis || 'N/A'],
-        [t['tool.lidar'], diagnosis.advancedAnalysis?.lidarDepthMap || 'N/A'],
-        [t['tool.xray'], diagnosis.advancedAnalysis?.xrayProjection || 'N/A'],
-        [language === 'TR' ? 'MİKRON HOMOJENLİĞİ' : 'MICRON UNIFORMITY', diagnosis.advancedAnalysis?.micronHomogeneity || 'N/A'],
-        [language === 'TR' ? 'TERMAL GRADYAN' : 'THERMAL GRADIENT', diagnosis.advancedAnalysis?.thermalGradient || 'N/A'],
-        [language === 'TR' ? 'PODYE/SÜTUN ANALİZİ' : 'STRUT/PILLAR ANALYSIS', diagnosis.advancedAnalysis?.pillarAnalysis || 'N/A'],
-      ],
-      styles: { fontSize: 9 },
-      columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50 } }
-    });
-
-    if (detailedReportText) {
-      drawSectionHeader('AI UZMAN GÖRÜŞÜ', 80);
-      const splitText = doc.splitTextToSize(detailedReportText, pageWidth - (margin * 2));
-      doc.setFontSize(9);
-      doc.text(splitText, margin, 90);
-    }
-
-    doc.text('Sayfa 4', pageWidth / 2, pageHeight - 10, { align: 'center' });
-
-    // --- PAGE 5: SPECIALIZED DIAGNOSTICS (NEW) ---
-    if (analysisResult) {
-      doc.addPage();
-      drawVerticalTitle(language === 'TR' ? 'SPESİFİK DİYAGNOSTİK ANALİZ' : 'SPECIFIC DIAGNOSTIC ANALYSIS');
-      drawSectionHeader(language === 'TR' ? 'Sistem Analiz Verileri' : 'System Analysis Data', 20);
-      
-      const diagRows = Object.entries(analysisResult as Record<string, unknown>).filter(([k]) => k !== 'alerts' && k !== 'findings' && k !== 'risk').map(([key, val]) => [key.toUpperCase(), String(val ?? '')]);
-      
-      autoTable(doc, {
-        startY: 30,
-        margin: { left: margin },
-        body: diagRows,
-        styles: { fontSize: 9 },
-        columnStyles: { 0: { fontStyle: 'bold', cellWidth: 50, fillColor: [240,240,240] } }
-      });
-      
-      if (analysisResult.alerts && (analysisResult.alerts as string[]).length > 0) {
-        drawSectionHeader(language === 'TR' ? 'Sistem Uyarıları & Tespitler' : 'System Alerts & Findings', (doc as any).lastAutoTable.finalY + 15);
-        autoTable(doc, {
-          startY: (doc as any).lastAutoTable.finalY + 23,
-          margin: { left: margin },
-          body: (analysisResult.alerts as string[]).map((a: string) => [a]),
-          styles: { fontSize: 8, textColor: [180, 0, 0] },
-          theme: 'grid'
-        });
-      }
-      
-      doc.text('Sayfa 5', pageWidth / 2, pageHeight - 10, { align: 'center' });
-    }
-
-    // --- PAGE 6: CHECKLIST DATA ---
-    doc.addPage();
-    drawVerticalTitle(language === 'TR' ? 'KONTROL LİSTESİ SONUÇLARI' : 'CHECKLIST RESULTS');
-    
-    let lastY = 20;
-    Object.values(checklistData).forEach((section: any) => {
-      const checkedItems = section.items.filter((i: any) => i.checked);
-      if (checkedItems.length > 0) {
-        drawSectionHeader(section.name.toUpperCase(), lastY);
-        autoTable(doc, {
-          startY: lastY + 10,
-          margin: { left: margin },
-          body: checkedItems.map((item: any) => [item.label, language === 'TR' ? 'TESPİT EDİLDİ / ONAYLANDI' : 'DETECTED / VERIFIED']),
-          styles: { fontSize: 8 },
-          theme: 'grid',
-          headStyles: { fillColor: [200, 200, 200] }
-        });
-        lastY = (doc as any).lastAutoTable.finalY + 10;
-        
-        if (lastY > pageHeight - 30) {
-          doc.addPage();
-          lastY = 20;
+      styles: { fontSize: 6.5, cellPadding: 1.3 },
+      headStyles: { fillColor: [25,25,35], textColor: [255,255,255], fontStyle: 'bold' },
+      alternateRowStyles: { fillColor: [249,249,249] },
+      columnStyles: { 0:{cellWidth:18}, 1:{cellWidth:42}, 2:{cellWidth:16,fontStyle:'bold'}, 3:{cellWidth:18,halign:'center'} },
+      didParseCell: (data: any) => {
+        if (data.section === 'body' && data.column.index === 2) {
+          const v = String(data.cell.raw || '');
+          if (v === 'ORJ') data.cell.styles.textColor = [22,163,74];
+          else if (['BOY','LOK'].includes(v)) data.cell.styles.textColor = [202,138,4];
+          else if (['GOK','DEG','CIZ','KIR','MAC'].includes(v)) data.cell.styles.textColor = [220,38,38];
         }
       }
     });
 
-    // Save PDF
-    const fileName = `Expert_Report_${manualBrand || 'Vehicle'}_${reportNo}.pdf`;
-    doc.save(fileName);
-    
-    speak(t['report.expert_downloading']); // Need to add this
+    const lY = (doc as any).lastAutoTable.finalY + 6;
+    y = sec(isEN ? 'STATUS CODES KEY' : 'DURUM KODLARI ANAHTARI', lY);
+    autoTable(doc, {
+      startY: y, margin: { left: margin, right: margin }, theme: 'plain',
+      body: [
+        ['ORJ: Orijinal', 'BOY: Boyalı', 'LOK: Lokal Boyalı', 'DEG: Değişmiş'],
+        ['CIZ: Çizik',    'GOK: Göçük',  'MAC: Macunlu',        'KIR: Kırık/Çatlak']
+      ],
+      styles: { fontSize: 7, fontStyle: 'bold' },
+      columnStyles: { 0:{cellWidth:42}, 1:{cellWidth:38}, 2:{cellWidth:42}, 3:{cellWidth:40} }
+    });
+
+    if (expertReportData) {
+      y = (doc as any).lastAutoTable.finalY + 6;
+      y = sec(isEN ? 'DAMAGE SUMMARY' : 'HASAR ÖZETİ', y);
+      autoTable(doc, {
+        startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+        body: [
+          [isEN?'Damage Area %':'Hasar Alanı %', `${expertReportData.damagePercentage.toFixed(1)}%`],
+          [isEN?'Symmetry Score':'Simetri Skoru', `${expertReportData.symmetryScore.toFixed(1)}%`],
+          [isEN?'Stance Analysis':'Duruş Analizi', expertReportData.stanceAnalysis || '—'],
+          [isEN?'Full Inspection':'Tam İnceleme', expertReportData.isFullyInspected
+            ? (isEN?'YES — All angles scanned':'EVET — Tüm açılar tarandı')
+            : (isEN?'NO — Partial scan':'HAYIR — Kısmi tarama')],
+        ],
+        styles: { fontSize: 8, cellPadding: 2 },
+        columnStyles: { 0:{cellWidth:50, fillColor:[245,245,248], fontStyle:'bold'} }
+      });
+    }
+    drawFooter(3);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 4 — AI FONKSİYONEL VERİLER
+    // ═══════════════════════════════════════════════════════════════════════
+    doc.addPage();
+    drawHeader(isEN ? 'AI FORENSIC ANALYSIS DATA' : 'AI FONKSİYONEL ANALİZ VERİLERİ', `#${reportNo}`);
+    y = 26;
+    y = sec(isEN ? 'PRO-AI ANALYSIS RESULTS' : 'PRO-AI ANALİZ SONUÇLARI', y);
+
+    autoTable(doc, {
+      startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+      body: [
+        [isEN?'Zebra Reflections':'Zebra Yansımaları', diagnosis.advancedAnalysis?.zebraReflections || '—'],
+        [isEN?'Spectroscopic Color':'Spektroskopik Renk', diagnosis.advancedAnalysis?.spectroscopicColor || '—'],
+        [isEN?'Texture Analysis':'Doku Analizi', diagnosis.advancedAnalysis?.textureAnalysis || '—'],
+        [isEN?'LIDAR Depth Map':'LIDAR Derinlik Haritası', diagnosis.advancedAnalysis?.lidarDepthMap || '—'],
+        [isEN?'X-Ray Projection':'X-Ray Projeksiyonu', diagnosis.advancedAnalysis?.xrayProjection || '—'],
+        [isEN?'Micron Homogeneity':'Mikron Homojenliği', diagnosis.advancedAnalysis?.micronHomogeneity || '—'],
+        [isEN?'Thermal Gradient':'Termal Gradyan', diagnosis.advancedAnalysis?.thermalGradient || '—'],
+        [isEN?'Pillar/Strut Analysis':'Sütun/Kasa Analizi', diagnosis.advancedAnalysis?.pillarAnalysis || '—'],
+        [isEN?'Vehicle Subtype':'Araç Alt Tipi', diagnosis.vehicleSubtype || '—'],
+        [isEN?'Detection Confidence':'Tespit Güveni', `${confScore}%`],
+        [isEN?'Image Quality Score':'Görüntü Kalite Skoru', (diagnosis.technicalSpecs as any)?.imageQuality != null ? `${Math.round((diagnosis.technicalSpecs as any).imageQuality * 100)}%` : '—'],
+      ],
+      styles: { fontSize: 7.5, cellPadding: 2 },
+      columnStyles: { 0:{cellWidth:52, fillColor:[245,245,248], fontStyle:'bold'} }
+    });
+
+    if (detailedReportText) {
+      y = (doc as any).lastAutoTable.finalY + 6;
+      y = sec(isEN ? 'AI EXPERT OPINION' : 'AI UZMAN GÖRÜŞÜ', y);
+      doc.setFontSize(7.5); doc.setFont('helvetica','normal');
+      const lines = doc.splitTextToSize(detailedReportText, pageWidth - margin * 2);
+      const maxL = Math.floor((pageHeight - y - 20) / 4);
+      doc.text(lines.slice(0, maxL), margin, y + 4);
+    }
+    drawFooter(4);
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 5 — SPESİFİK DİYAGNOSTİK (MECH / ELEC)
+    // ═══════════════════════════════════════════════════════════════════════
+    if (analysisResult) {
+      doc.addPage();
+      const mLabel = mode === 'MECH' ? (isEN?'MECHANICAL DIAGNOSTIC ANALYSIS':'MEKANİK DİYAGNOSTİK ANALİZ')
+                   : mode === 'ELEC' ? (isEN?'ELECTRICAL DIAGNOSTIC ANALYSIS':'ELEKTRİK DİYAGNOSTİK ANALİZ')
+                   : (isEN?'SPECIALIZED DIAGNOSTIC':'SPESİFİK DİYAGNOSTİK');
+      drawHeader(mLabel, `#${reportNo}`);
+      y = 26;
+      y = sec(mLabel, y);
+
+      const diagRows = Object.entries(analysisResult as Record<string,unknown>)
+        .filter(([k]) => !['alerts','findings','risk','frequencyBands'].includes(k))
+        .map(([k,v]) => [k.replace(/([A-Z])/g,' $1').toUpperCase().trim(), String(v ?? '—')]);
+
+      autoTable(doc, {
+        startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+        body: diagRows,
+        styles: { fontSize: 7.5, cellPadding: 2 },
+        columnStyles: { 0:{fontStyle:'bold', cellWidth:62, fillColor:[245,245,248]} }
+      });
+
+      if ((analysisResult as any).frequencyBands && mode === 'MECH') {
+        y = (doc as any).lastAutoTable.finalY + 6;
+        y = sec(isEN ? 'FFT FREQUENCY BAND ANALYSIS' : 'FFT FREKANS BANT ANALİZİ', y);
+        const bands = (analysisResult as any).frequencyBands as Record<string,number>;
+        Object.entries(bands).forEach(([band, level], idx) => {
+          const pct = Math.min(100, Math.round(((level as number) / 255) * 100));
+          scoreBar(band, pct, y + 6 + idx * 9, [80,130,255]);
+        });
+        y += Object.keys(bands).length * 9 + 12;
+      }
+
+      if (analysisResult.alerts && (analysisResult.alerts as string[]).length > 0) {
+        y = Math.max(y, (doc as any).lastAutoTable?.finalY + 6 || y);
+        y = sec(isEN ? 'SYSTEM ALERTS' : 'SİSTEM UYARILARI', y);
+        autoTable(doc, {
+          startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+          body: (analysisResult.alerts as string[]).map((a:string) => ['⚠  ' + a]),
+          styles: { fontSize: 7.5, textColor: [190,0,0], cellPadding: 2 }
+        });
+      }
+      drawFooter(5);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 6 — NHTSA GÜVENLİK & GERİ ÇAĞIRMA (VIN girilmişse)
+    // ═══════════════════════════════════════════════════════════════════════
+    let pageNum = analysisResult ? 6 : 5;
+    if (nhtsaVehicleData && nhtsaVehicleData.make) {
+      doc.addPage();
+      drawHeader(isEN ? 'NHTSA FEDERAL SAFETY DATA' : 'NHTSA FEDERAL GÜVENLİK VERİSİ', `#${reportNo}`);
+      y = 26;
+      y = sec(isEN ? 'NHTSA VEHICLE SPECIFICATION' : 'NHTSA ARAÇ TEKNİK BİLGİSİ', y);
+
+      autoTable(doc, {
+        startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+        body: [
+          [isEN?'Make':'Marka', nhtsaVehicleData.make||'—', isEN?'Fuel':'Yakıt', nhtsaVehicleData.fuelType||'—'],
+          [isEN?'Model':'Model', nhtsaVehicleData.model||'—', isEN?'Drive':'Çekiş', nhtsaVehicleData.driveType||'—'],
+          [isEN?'Year':'Yıl', nhtsaVehicleData.year||'—', isEN?'Transmission':'Şanzıman', nhtsaVehicleData.transmission||'—'],
+          [isEN?'Body':'Kasa', nhtsaVehicleData.bodyClass||'—', isEN?'Cylinders':'Silindir', nhtsaVehicleData.engineCylinders||'—'],
+          [isEN?'Engine':'Motor', [nhtsaVehicleData.engineConfig, nhtsaVehicleData.displacementL?nhtsaVehicleData.displacementL+'L':''].filter(Boolean).join(' ')||'—', isEN?'Manufacturer':'Üretici', nhtsaVehicleData.manufacturer||'—'],
+          [isEN?'Plant Country':'Üretim Ülkesi', nhtsaVehicleData.plantCountry||'—', 'GVWR', nhtsaVehicleData.gvwr||'—'],
+        ],
+        styles: { fontSize: 7.5, cellPadding: 2 },
+        columnStyles: {
+          0:{cellWidth:35, fillColor:[245,245,248], fontStyle:'bold'},
+          2:{cellWidth:35, fillColor:[245,245,248], fontStyle:'bold'}
+        }
+      });
+
+      y = (doc as any).lastAutoTable.finalY + 6;
+      y = sec(
+        nhtsaRecalls.length > 0
+          ? (isEN?`RECALL HISTORY — ${nhtsaRecalls.length} RECORD(S) FOUND`:`GERİ ÇAĞIRMA GEÇMİŞİ — ${nhtsaRecalls.length} KAYIT BULUNDU`)
+          : (isEN?'RECALL HISTORY — NO RECORDS':'GERİ ÇAĞIRMA GEÇMİŞİ — KAYIT YOK'),
+        y
+      );
+
+      if (nhtsaRecalls.length === 0) {
+        doc.setFontSize(9); doc.setTextColor(22,163,74); doc.setFont('helvetica','bold');
+        doc.text(isEN?'✓ No recall records found for this vehicle.':'✓ Bu araç için geri çağırma kaydı bulunamadı.', margin, y+6);
+        doc.setTextColor(0,0,0); doc.setFont('helvetica','normal'); y+=14;
+      } else {
+        autoTable(doc, {
+          startY: y, margin: { left: margin, right: margin },
+          head: [[isEN?'Campaign #':'Kampanya #', isEN?'Component':'Bileşen', isEN?'Summary':'Özet', isEN?'Date':'Tarih']],
+          body: nhtsaRecalls.map((r: NHTSARecall) => [
+            r.NHTSACampaignNumber||'—',
+            r.Component||'—',
+            (r.Summary||'').substring(0,110)+((r.Summary||'').length>110?'...':''),
+            r.ReportReceivedDate?r.ReportReceivedDate.split('T')[0]:'—'
+          ]),
+          styles: { fontSize: 6.2, cellPadding: 1.3 },
+          headStyles: { fillColor: [185,0,0], textColor: [255,255,255], fontStyle: 'bold' },
+          alternateRowStyles: { fillColor: [255,250,250] },
+          columnStyles: { 0:{cellWidth:22}, 1:{cellWidth:35}, 3:{cellWidth:22} }
+        });
+        y = (doc as any).lastAutoTable.finalY + 5;
+        doc.setFontSize(6.5); doc.setTextColor(160,0,0);
+        doc.text(isEN?'* Visit NHTSA.gov for full recall details and remedy procedures.':'* Tam kayıt ve çözüm bilgisi için NHTSA.gov adresini ziyaret edin.', margin, y);
+        doc.setTextColor(0,0,0);
+      }
+      drawFooter(pageNum);
+      pageNum++;
+    }
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 7 — KONTROL LİSTESİ SONUÇLARI
+    // ═══════════════════════════════════════════════════════════════════════
+    doc.addPage();
+    drawHeader(isEN ? 'CHECKLIST RESULTS' : 'KONTROL LİSTESİ SONUÇLARI', `#${reportNo}`);
+    y = 26;
+
+    const allChecked: any[] = [];
+    const allNormal: any[] = [];
+    Object.values(checklistData).forEach((section: any) => {
+      section.items.forEach((item: any) => {
+        if (item.checked) allChecked.push([section.name, item.label, isEN?'DETECTED':'TESPİT EDİLDİ']);
+        else              allNormal.push( [section.name, item.label, isEN?'OK / N/A':'NORMAL / YOK']);
+      });
+    });
+
+    if (allChecked.length > 0) {
+      y = sec(isEN?'DETECTED ISSUES':'TESPİT EDİLEN SORUNLAR', y);
+      autoTable(doc, {
+        startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+        head: [[isEN?'System':'Sistem', isEN?'Item':'Kalem', isEN?'Status':'Durum']],
+        body: allChecked,
+        styles: { fontSize: 7.5, cellPadding: 2 },
+        headStyles: { fillColor: [185,0,0], textColor: [255,255,255] },
+        columnStyles: { 2:{textColor:[185,0,0], fontStyle:'bold'} }
+      });
+      y = (doc as any).lastAutoTable.finalY + 6;
+    }
+
+    if (allNormal.length > 0 && y < pageHeight - 55) {
+      y = sec(isEN?'NORMAL / NOT DETECTED':'NORMAL / TESPİT EDİLMEDİ', y);
+      autoTable(doc, {
+        startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+        head: [[isEN?'System':'Sistem', isEN?'Item':'Kalem', isEN?'Status':'Durum']],
+        body: allNormal,
+        styles: { fontSize: 7, cellPadding: 1.5 },
+        headStyles: { fillColor: [22,163,74], textColor: [255,255,255] },
+        columnStyles: { 2:{textColor:[22,163,74], fontStyle:'bold'} }
+      });
+    }
+    drawFooter(pageNum);
+    pageNum++;
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // SAYFA 8 — SON KARAR & DİJİTAL İMZA
+    // ═══════════════════════════════════════════════════════════════════════
+    doc.addPage();
+    drawHeader(isEN ? 'FINAL VERDICT & DIGITAL FINGERPRINT' : 'SON KARAR & DİJİTAL PARMAK İZİ', `#${reportNo}`);
+
+    // Büyük skor dairesi
+    doc.setFillColor(...vColor);
+    doc.circle(pageWidth / 2, 50, 20, 'F');
+    doc.setTextColor(255,255,255); doc.setFont('helvetica','bold'); doc.setFontSize(18);
+    doc.text(overall.toString(), pageWidth / 2, 53, { align: 'center' });
+    doc.setFontSize(7);
+    doc.text('/100', pageWidth / 2, 62, { align: 'center' });
+    doc.setTextColor(0,0,0); doc.setFontSize(15); doc.setFont('helvetica','bold');
+    doc.text(verdict, pageWidth / 2, 77, { align: 'center' });
+    doc.setFont('helvetica','normal');
+
+    y = 88;
+    y = sec(isEN?'SCORE BREAKDOWN':'PUAN DAĞILIMI', y);
+    scoreBar(isEN?'Body/Paint':'Kaporta/Boya', bodyScore, y+7);
+    if (mechScore!==null) scoreBar(isEN?'Mechanical':'Mekanik', mechScore, y+16);
+    if (elecScore!==null) scoreBar(isEN?'Electrical':'Elektrik', elecScore, y+25);
+    scoreBar(isEN?'Detection Confidence':'Tespit Güveni', confScore, y+(mechScore!==null?(elecScore!==null?34:25):16), [100,120,220]);
+    y += (mechScore!==null?(elecScore!==null?44:35):26);
+
+    y = sec(isEN?'RECOMMENDATIONS':'TAVSİYELER', y);
+    const recs: string[] = [];
+    if (bodyScore < 70)      recs.push(isEN?'• Body repair and repainting recommended.':'• Kaporta onarımı ve boya önerilir.');
+    if (mechScore!==null && mechScore < 70) recs.push(isEN?'• Mechanical inspection at authorized service center required.':'• Yetkili serviste mekanik muayene gereklidir.');
+    if (elecScore!==null && elecScore < 70) recs.push(isEN?'• Electrical system check recommended.':'• Elektrik sistemi kontrolü önerilir.');
+    if (nhtsaRecalls.length > 0) recs.push(isEN?`• ${nhtsaRecalls.length} open recall(s) detected — remedy via NHTSA.gov.`:`• ${nhtsaRecalls.length} açık geri çağırma tespit edildi — NHTSA.gov üzerinden çözüm uygulayın.`);
+    if (overall >= 85) recs.push(isEN?'• Vehicle is in good condition. Regular maintenance recommended.':'• Araç iyi durumda. Düzenli bakım önerilir.');
+    if (recs.length === 0) recs.push(isEN?'• No significant issues detected.':'• Önemli sorun tespit edilmedi.');
+
+    doc.setFontSize(8.5); doc.setFont('helvetica','normal');
+    recs.forEach((r,i) => doc.text(r, margin, y+5+i*8));
+    y += recs.length * 8 + 12;
+
+    y = sec(isEN?'DIGITAL FINGERPRINT':'DİJİTAL PARMAK İZİ', y);
+    const fp = `AKN-${reportNo}-${Date.now().toString(36).toUpperCase()}-${(diagnosis.confidenceScore||0.75).toFixed(4).replace('.','')}`; 
+    autoTable(doc, {
+      startY: y, margin: { left: margin, right: margin }, theme: 'grid',
+      body: [
+        [isEN?'Report ID':'Rapor ID',       fp],
+        [isEN?'Generated':'Oluşturuldu',    new Date().toISOString()],
+        [isEN?'VIN':'VIN',                  vinNumber.toUpperCase() || '—'],
+        [isEN?'Data Sources':'Veri Kaynakları', vinNumber ? 'NHTSA Federal DB + Local TF.js Neural Engine' : 'Local TF.js Neural Engine'],
+        [isEN?'AI Models':'AI Modelleri',   'COCO-SSD lite_mobilenet_v2 + MobileNet v2 (ImageNet)'],
+        [isEN?'Backend':'Altyapı',          'TensorFlow.js WebGL → CPU Fallback | jsPDF 2.5'],
+        [isEN?'Integrity':'Bütünlük',       `SHA-seed: ${reportNo.toString(16).toUpperCase()}`],
+      ],
+      styles: { fontSize: 7, cellPadding: 2 },
+      columnStyles: { 0:{cellWidth:44, fillColor:[245,245,248], fontStyle:'bold'} }
+    });
+
+    doc.setFontSize(6.5); doc.setTextColor(120,120,120);
+    doc.text(
+      isEN
+        ? 'This report was generated by AKN Global Neural Forensics. AI results are advisory — consult a licensed mechanic for final assessment.'
+        : 'Bu rapor AKN Global Neural Forensics tarafından oluşturulmuştur. AI sonuçları tavsiye niteliğindedir — kesin değerlendirme için lisanslı eksper görüşü alınız.',
+      margin, pageHeight - 18,
+      { maxWidth: pageWidth - margin * 2 }
+    );
+    drawFooter(pageNum);
+
+    // ── Kaydet ───────────────────────────────────────────────────────────
+    const fn = `AKN_Ekspertiz_${(brand||'Arac').replace(/\s+/g,'_')}_${year||new Date().getFullYear()}_${reportNo}.pdf`;
+    doc.save(fn);
+    speak(t['report.expert_downloading'] || (language==='TR'?'Rapor indiriliyor.':'Downloading report.'));
   };
+
 
 
   const [history, setHistory] = useState<VehicleDiagnosis[]>([]);

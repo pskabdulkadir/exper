@@ -169,6 +169,73 @@ const WMI_TABLE: Record<string, string> = {
     'YV2': 'Volvo Kamyon', 'YV3': 'Volvo Otobüs',
 };
 
+// ─── NHTSA Federal API (Ücretsiz · Sınırsız · API Key Gerektirmez) ─────────────
+
+export interface NHTSAVehicleData {
+    make: string; model: string; year: string; series: string; trim: string;
+    bodyClass: string; driveType: string; engineConfig: string; engineCylinders: string;
+    displacementL: string; fuelType: string; transmission: string; vehicleType: string;
+    manufacturer: string; plantCountry: string; gvwr: string; errorCode: string;
+}
+
+export interface NHTSARecall {
+    Component: string; Summary: string; Consequence: string;
+    Remedy: string; ReportReceivedDate: string; NHTSACampaignNumber: string;
+}
+
+export async function getNHTSAVehicleData(vin: string): Promise<NHTSAVehicleData | null> {
+    try {
+        const res = await fetch(
+            `https://api.nhtsa.gov/vehicles/decodevin/${encodeURIComponent(vin)}?format=json`,
+            { signal: AbortSignal.timeout(9000) }
+        );
+        if (!res.ok) return null;
+        const data = await res.json();
+        if (!data.Results) return null;
+        const get = (v: string): string => {
+            const item = data.Results.find((r: any) => r.Variable === v);
+            const val = item?.Value;
+            return (val && val !== 'Not Applicable' && val !== '0' && val !== '') ? val : '';
+        };
+        return {
+            make: get('Make'), model: get('Model'), year: get('Model Year'),
+            series: get('Series'), trim: get('Trim'), bodyClass: get('Body Class'),
+            driveType: get('Drive Type'), engineConfig: get('Engine Configuration'),
+            engineCylinders: get('Engine Number of Cylinders'), displacementL: get('Displacement (L)'),
+            fuelType: get('Fuel Type - Primary'), transmission: get('Transmission Style'),
+            vehicleType: get('Vehicle Type'), manufacturer: get('Manufacturer Name'),
+            plantCountry: get('Plant Country'), gvwr: get('Gross Vehicle Weight Rating From'),
+            errorCode: get('Error Code')
+        };
+    } catch { return null; }
+}
+
+export async function getNHTSARecalls(make: string, model: string, year: string): Promise<NHTSARecall[]> {
+    if (!make || !model || !year) return [];
+    try {
+        const res = await fetch(
+            `https://api.nhtsa.gov/recalls/recallsByVehicle?make=${encodeURIComponent(make)}&model=${encodeURIComponent(model)}&modelYear=${encodeURIComponent(year)}`,
+            { signal: AbortSignal.timeout(9000) }
+        );
+        if (!res.ok) return [];
+        const data = await res.json();
+        return (data.results || []).slice(0, 25);
+    } catch { return []; }
+}
+
+export async function getNHTSAComplaints(make: string, model: string, year: string): Promise<any[]> {
+    if (!make || !model || !year) return [];
+    try {
+        const res = await fetch(
+            `https://api.nhtsa.gov/complaints/complaintsByVehicle?make=${encodeURIComponent(make)}&model=${encodeURIComponent(model)}&modelYear=${encodeURIComponent(year)}`,
+            { signal: AbortSignal.timeout(9000) }
+        );
+        if (!res.ok) return [];
+        const data = await res.json();
+        return (data.results || []).slice(0, 10);
+    } catch { return []; }
+}
+
 export async function getVinDetails(vin: string, lang: Language = 'TR') {
     const cleanVin = vin.trim().toUpperCase();
     if (cleanVin.length < 17) {
@@ -179,7 +246,51 @@ export async function getVinDetails(vin: string, lang: Language = 'TR') {
         };
     }
 
-    // WMI (3 karakter)
+    // ── 1. Önce NHTSA Federal API'yi dene ──────────────────────────────────
+    const nhtsaData = await getNHTSAVehicleData(cleanVin);
+    if (nhtsaData && nhtsaData.make) {
+        const t1 = lang === 'TR' ? 'ARAÇ KİMLİK BİLGİLERİ (NHTSA)' : 'VEHICLE IDENTITY (NHTSA)';
+        const t2 = lang === 'TR' ? 'TEKNİK ÖZELLİKLER' : 'TECHNICAL SPECIFICATIONS';
+        const filterDash = (items: {label:string;value:string}[]) => items.filter(i => i.value);
+        return {
+            title: lang === 'TR' ? 'NHTSA FABRİKA ÇIKIŞ RAPORU' : 'NHTSA FACTORY SPECIFICATION REPORT',
+            nhtsaData,
+            sections: [
+                {
+                    name: t1,
+                    items: filterDash([
+                        { label: lang === 'TR' ? 'Marka' : 'Make', value: nhtsaData.make },
+                        { label: lang === 'TR' ? 'Model' : 'Model', value: nhtsaData.model },
+                        { label: lang === 'TR' ? 'Model Yılı' : 'Model Year', value: nhtsaData.year },
+                        { label: lang === 'TR' ? 'Seri' : 'Series', value: nhtsaData.series },
+                        { label: 'Trim', value: nhtsaData.trim },
+                        { label: 'VIN', value: cleanVin },
+                        { label: lang === 'TR' ? 'Araç Tipi' : 'Vehicle Type', value: nhtsaData.vehicleType },
+                        { label: lang === 'TR' ? 'Üretici Firma' : 'Manufacturer', value: nhtsaData.manufacturer },
+                        { label: lang === 'TR' ? 'Üretim Ülkesi' : 'Plant Country', value: nhtsaData.plantCountry },
+                    ])
+                },
+                {
+                    name: t2,
+                    items: filterDash([
+                        { label: lang === 'TR' ? 'Kasa Tipi' : 'Body Class', value: nhtsaData.bodyClass },
+                        { label: lang === 'TR' ? 'Çekiş Sistemi' : 'Drive Type', value: nhtsaData.driveType },
+                        { label: lang === 'TR' ? 'Motor Yapısı' : 'Engine Config', value: nhtsaData.engineConfig },
+                        { label: lang === 'TR' ? 'Silindir Sayısı' : 'Cylinders', value: nhtsaData.engineCylinders },
+                        { label: lang === 'TR' ? 'Motor Hacmi (L)' : 'Displacement (L)', value: nhtsaData.displacementL },
+                        { label: lang === 'TR' ? 'Yakıt Türü' : 'Fuel Type', value: nhtsaData.fuelType },
+                        { label: lang === 'TR' ? 'Şanzıman' : 'Transmission', value: nhtsaData.transmission },
+                        { label: 'GVWR', value: nhtsaData.gvwr },
+                    ])
+                }
+            ],
+            integrity: lang === 'TR'
+                ? `✓ VIN, NHTSA federal veritabanında doğrulandı. ${nhtsaData.make} ${nhtsaData.model} ${nhtsaData.year}${nhtsaData.errorCode ? ` — Uyarı: ${nhtsaData.errorCode}` : ''}`
+                : `✓ VIN verified via NHTSA federal database. ${nhtsaData.make} ${nhtsaData.model} ${nhtsaData.year}${nhtsaData.errorCode ? ` — Warning: ${nhtsaData.errorCode}` : ''}`
+        };
+    }
+
+    // ── 2. Yerel WMI tablosuna geri dön ────────────────────────────────────
     const wmi3 = cleanVin.substring(0, 3);
     const wmi2 = cleanVin.substring(0, 2);
     const brand = WMI_TABLE[wmi3] || WMI_TABLE[wmi2] || (lang === 'TR' ? 'Bilinmeyen Marka' : 'Unknown Brand');
