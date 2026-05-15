@@ -307,6 +307,23 @@ export default function App() {
   const sensors = useSensors();
   const { frequencyData, dbLevel } = useAudioAnalyzer(mode === 'MECH');
 
+  // MEKANİK mod için ses akümülatörü — 30 saniyelik ortalama ve tepe dB
+  const audioAccumRef = useRef<{ sum: number; peak: number; count: number; lastFreq: Uint8Array }>({
+    sum: 0, peak: 0, count: 0, lastFreq: new Uint8Array(0)
+  });
+
+  useEffect(() => {
+    if (mode === 'MECH' && isScanning && dbLevel > 0) {
+      audioAccumRef.current.sum  += dbLevel;
+      audioAccumRef.current.count++;
+      audioAccumRef.current.peak = Math.max(audioAccumRef.current.peak, dbLevel);
+      if (frequencyData.length > 0) audioAccumRef.current.lastFreq = frequencyData;
+    }
+    if (!isScanning) {
+      audioAccumRef.current = { sum: 0, peak: 0, count: 0, lastFreq: new Uint8Array(0) };
+    }
+  }, [dbLevel, isScanning, mode, frequencyData]);
+
   // Uygulama açılırken lisans kontrolü yap ve modelleri ön yükle
   useEffect(() => {
     const initializeApp = async () => {
@@ -1157,7 +1174,13 @@ export default function App() {
           // Wait for the scan duration
           await new Promise(resolve => setTimeout(resolve, scanDuration));
           
-          const currentAudioData = mode === 'MECH' ? { dbLevel, frequencyData } : undefined;
+          const acc = audioAccumRef.current;
+          const currentAudioData = mode === 'MECH' ? {
+            dbLevel,
+            frequencyData: acc.lastFreq.length > 0 ? acc.lastFreq : frequencyData,
+            avgDbLevel: acc.count > 0 ? acc.sum / acc.count : dbLevel,
+            peakDbLevel: acc.peak > 0 ? acc.peak : dbLevel
+          } : undefined;
           const currentSensorData = { magneticField: sensors.magneticField, acceleration: sensors.acceleration };
           const result = await analyzeCondition(frame, scanType, language, currentAudioData, currentSensorData);
           
@@ -1173,13 +1196,13 @@ export default function App() {
                 
                 if (mode === 'MECH') {
                     next.engine.items.forEach((item: any) => {
-                        if (item.label.includes('Ses') && (alerts.some(a => a.toLowerCase().includes('ses') || a.toLowerCase().includes('acoustic')) || (result.harmonicDistortion && parseFloat(result.harmonicDistortion) > 3.5))) item.checked = true;
+                        if (item.label.includes('Ses') && (alerts.some(a => a.toLowerCase().includes('ses') || a.toLowerCase().includes('acoustic')) || (result.harmonicDistortion && parseFloat(result.harmonicDistortion as string) > 3.5))) item.checked = true;
                         if (item.label.includes('Yağ') && alerts.some(a => a.toLowerCase().includes('yağ') || a.toLowerCase().includes('leak'))) item.checked = true;
                         if (item.label.includes('Turbo') && alerts.some(a => a.toLowerCase().includes('turbo'))) item.checked = true;
                     });
                 } else if (mode === 'ELEC') {
                     next.obd.items.forEach((item: any) => {
-                        if (item.label.includes('Hata') && (alerts.some(a => a.toLowerCase().includes('hata') || a.toLowerCase().includes('error')) || (result.magneticAnomaly && parseFloat(result.magneticAnomaly) > 0.6))) item.checked = true;
+                        if (item.label.includes('Hata') && (alerts.some(a => a.toLowerCase().includes('hata') || a.toLowerCase().includes('error')) || (result.magneticAnomaly && parseFloat(result.magneticAnomaly as string) > 0.6))) item.checked = true;
                         if (item.label.includes('Akü') && alerts.some(a => a.toLowerCase().includes('akü') || a.toLowerCase().includes('battery'))) item.checked = true;
                     });
                 }
