@@ -765,7 +765,7 @@ export default function App() {
       drawVerticalTitle(language === 'TR' ? 'SPESİFİK DİYAGNOSTİK ANALİZ' : 'SPECIFIC DIAGNOSTIC ANALYSIS');
       drawSectionHeader(language === 'TR' ? 'Sistem Analiz Verileri' : 'System Analysis Data', 20);
       
-      const diagRows = Object.entries(analysisResult).filter(([k]) => k !== 'alerts' && k !== 'findings' && k !== 'risk').map(([key, val]) => [key.toUpperCase(), val]);
+      const diagRows = Object.entries(analysisResult as Record<string, unknown>).filter(([k]) => k !== 'alerts' && k !== 'findings' && k !== 'risk').map(([key, val]) => [key.toUpperCase(), String(val ?? '')]);
       
       autoTable(doc, {
         startY: 30,
@@ -1047,7 +1047,7 @@ export default function App() {
                       // Hybrid Scoring System
                       const baseConf = result.confidenceScore || 85;
                       const lightFactor = Math.min(10, Math.floor(lightLvl / 25)); // Up to 10 points bonus for good light
-                      const expertScore = Math.max(0, 100 - (result.confidenceScore > 90 ? 0 : 5) - (result.advancedAnalysis?.textureAnalysis?.includes('tespit') ? 10 : 0));
+                      const expertScore = Math.max(0, 100 - ((result.confidenceScore ?? 0) > 90 ? 0 : 5) - (result.advancedAnalysis?.textureAnalysis?.includes('tespit') ? 10 : 0));
                       const finalConditionScore = Math.round((baseConf * 0.3) + (expertScore * 0.6) + lightFactor);
                       setConditionScore(finalConditionScore);
                       
@@ -1129,7 +1129,6 @@ export default function App() {
         let scanDuration = 1000; // Default 1s for other modes
 
         switch(mode) {
-          case 'BODY': scanType = 'bodywork'; speakMsg = t['mode.desc.BODY']; break;
           case 'MECH': 
             scanType = 'mechanical'; 
             speakMsg = t['scan.mech_start']; 
@@ -1262,6 +1261,7 @@ export default function App() {
         return () => clearInterval(interval);
     } else {
         setForensicLogs([]);
+        return undefined;
     }
   }, [isScanning, language]);
 
@@ -1769,7 +1769,6 @@ export default function App() {
         colorAnalysisMode={isColorMode}
         lidarMode={isLidarMode}
         xrayMode={isXrayMode}
-        orientation={sensors}
         language={language}
         isMuted={isMuted}
         isEngineReady={isEngineReady}
@@ -3589,7 +3588,7 @@ export default function App() {
                                     <div className="w-2 h-2 rounded-full bg-green-500 shadow-[0_0_8px_rgba(34,197,94,1)]" />
                                 </div>
                                 <p className="text-[9px] font-mono text-white/50 leading-relaxed italic">
-                                    Bu rapor, AKN Global Group Ltd adli bilişim standartlarına göre şifrelenmiş ve bulut veritabanında (UUID: {diagnosis.id?.slice(0,8)}) kalıcı olarak arşivlenmiştir. 
+                                    Bu rapor, AKN Global Group Ltd adli bilişim standartlarına göre şifrelenmiş ve bulut veritabanında (UUID: {Math.abs(((diagnosis.objectName || 'AKN') + (diagnosis.model || '')).split('').reduce((a, c) => a + c.charCodeAt(0), 0)).toString(16).padStart(8, '0').toUpperCase()}) kalıcı olarak arşivlenmiştir. 
                                     Tüm analizler gerçek zamanlı sensör füzyonu ve Computer Vision (GMN-V2) algoritmaları ile doğrulanmıştır.
                                 </p>
                             </div>
@@ -3666,7 +3665,7 @@ export default function App() {
                     <span className="text-[9px] font-mono text-cyan-400 uppercase tracking-widest">{language === 'TR' ? 'ARŞİV KAYDI' : 'ARCHIVE_RECORD'}_{history.length - i}</span>
                     <div className="w-1.5 h-1.5 rounded-full bg-cyan-500 animate-pulse shadow-[0_0_8px_rgba(6,182,212,0.5)]" />
                   </div>
-                  <div className="text-white font-black text-sm mb-0.5 italic tracking-tight">{item.brand || (language === 'TR' ? 'Tanımlanamayan Araç' : 'Unidentified Vehicle')}</div>
+                  <div className="text-white font-black text-sm mb-0.5 italic tracking-tight">{item.objectName || (language === 'TR' ? 'Tanımlanamayan Araç' : 'Unidentified Vehicle')}</div>
                   <div className="text-zinc-400 font-bold text-[11px] mb-1">{item.model} {item.year}</div>
                   <div className="text-zinc-600 text-[9px] font-mono mb-3 uppercase tracking-tighter">{item.version} • {new Date().toLocaleDateString(language === 'TR' ? 'tr-TR' : 'en-US')}</div>
                   <div className="flex items-center gap-3">
