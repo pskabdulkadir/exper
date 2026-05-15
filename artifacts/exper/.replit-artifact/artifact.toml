@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "AKN Exper - Araç Ekspertiz"
+version = "1.0.0"
+id = "artifacts/exper"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 19893
+
+[services.development]
+run = "pnpm --filter @workspace/exper run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/exper", "run", "build" ]
+publicDir = "artifacts/exper/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "19893"
+BASE_PATH = "/"

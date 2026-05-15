@@ -1,45 +1,66 @@
-# [Project name]
+# AKN Exper - Araç Ekspertiz Uygulaması
 
-_Replace the heading above with the project's name, and this line with one sentence describing what this app does for users._
+Kamera üzerinden araç tanımlayan, gövde durumunu analiz eden ve sensör verilerini işleyerek kapsamlı teknik raporlar sunan yapay zeka destekli araç ekspertiz uygulaması.
 
 ## Run & Operate
 
-- `pnpm --filter @workspace/api-server run dev` — run the API server (port 5000)
-- `pnpm run typecheck` — full typecheck across all packages
-- `pnpm run build` — typecheck + build all packages
-- `pnpm --filter @workspace/api-spec run codegen` — regenerate API hooks and Zod schemas from the OpenAPI spec
-- `pnpm --filter @workspace/db run push` — push DB schema changes (dev only)
-- Required env: `DATABASE_URL` — Postgres connection string
+- `pnpm --filter @workspace/exper run dev` — uygulamayı çalıştır
+- `pnpm run typecheck` — tüm paketlerde tip kontrolü
+- `pnpm run build` — derle
 
 ## Stack
 
 - pnpm workspaces, Node.js 24, TypeScript 5.9
-- API: Express 5
-- DB: PostgreSQL + Drizzle ORM
-- Validation: Zod (`zod/v4`), `drizzle-zod`
-- API codegen: Orval (from OpenAPI spec)
-- Build: esbuild (CJS bundle)
+- React 19 + Vite 7
+- TailwindCSS v4
+- TensorFlow.js (COCO-SSD + MobileNet) — yerel araç tespiti
+- Firebase Firestore — cihaz lisans yönetimi
+- motion/react (framer-motion) — animasyonlar
+- jsPDF — rapor dışa aktarma
+- Lucide React — ikonlar
 
 ## Where things live
 
-_Populate as you build — short repo map plus pointers to the source-of-truth file for DB schema, API contracts, theme files, etc._
+- `artifacts/exper/src/App.tsx` — Ana uygulama (3895 satır)
+- `artifacts/exper/src/components/CameraView.tsx` — Kamera bileşeni
+- `artifacts/exper/src/lib/gemini.ts` — TensorFlow yapay zeka motoru
+- `artifacts/exper/src/lib/licenseManager.ts` — Firebase cihaz lisans kontrolü
+- `artifacts/exper/src/lib/firebase.ts` — Firebase bağlantısı
+- `artifacts/exper/src/lib/deviceAuth.ts` — Cihaz kimlik sistemi
+- `artifacts/exper/src/lib/translations.ts` — TR/EN/DE çeviri dosyası
+- `artifacts/exper/src/hooks/useSensors.ts` — Cihaz sensörleri (ivme, manyetik)
+- `artifacts/exper/src/hooks/useAudioAnalyzer.ts` — Ses analizi
 
 ## Architecture decisions
 
-_Populate as you build — non-obvious choices a reader couldn't infer from the code (3-5 bullets)._
+- Tüm AI analizi yerel olarak TensorFlow.js ile yapılır, dış API bağımlılığı yok
+- Firebase Firestore cihaz yetkilendirmesi: her cihaz `sh-XXXX` ID ile kaydolur, admin onayı gerekli
+- Firebase projesi: `exper-8bf14` (hardcoded — değiştirmeye gerek yok)
+- jsPDF ile PDF rapor indirme özelliği mevcut
+- WebGL cihazda desteklenmezse otomatik CPU fallback
 
 ## Product
 
-_Describe the high-level user-facing capabilities of this app once they exist._
+- Araç tanıma (kamera üzerinden COCO-SSD + MobileNet)
+- 360° gövde analizi (ön, arka, sol, sağ, tavan açılarından)
+- Mekanik, elektrik ve gövde modu taramaları
+- VIN numarası sorgulama
+- Boya kalınlığı ve kaporta hasar raporu
+- PDF ve TXT rapor dışa aktarma
+- TR / EN / DE dil desteği
 
-## User preferences
+## Device Authorization (Cihaz Yetkilendirme)
 
-_Populate as you build — explicit user instructions worth remembering across sessions._
+Uygulama ilk açılışta cihazı Firebase'e kaydeder (PENDING durumu).
+Firebase Console → Firestore → `AuthorizedDevices` koleksiyonundan:
+- `isAuthorized: true` ve `status: "Authorized"` yaparak cihazı onayla
 
 ## Gotchas
 
-_Populate as you build — sharp edges, "always run X before Y" rules._
+- WebGL preview ortamında desteklenmez; gerçek cihazda çalışır
+- Kamera erişimi HTTPS veya localhost gerektirir
+- Firebase bağlantısı Long Polling modunda çalışır (güvenilir bağlantı)
 
-## Pointers
+## User preferences
 
-- See the `pnpm-workspace` skill for workspace structure, TypeScript setup, and package details
+_Kullanıcı tercihleri eklendikçe buraya yazılacak._
