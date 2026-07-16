@@ -1,66 +1,34 @@
-import { defineConfig, loadEnv } from "vite";
-import react from "@vitejs/plugin-react";
-import tailwindcss from "@tailwindcss/vite";
-import path from "path";
-import runtimeErrorOverlay from "@replit/vite-plugin-runtime-error-modal";
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+import tailwindcss from '@tailwindcss/vite';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 
-const rawPort = process.env.PORT || "5173";
-const port = Number(rawPort);
+const __dirname = dirname(fileURLToPath(import.meta.url));
 
-if (Number.isNaN(port) || port <= 0) {
-  throw new Error(`Invalid PORT value: "${rawPort}"`);
-}
-
-const basePath = process.env.BASE_PATH || "/";
-
-export default defineConfig(({ mode }) => {
-  const env = loadEnv(mode, process.cwd(), '');
-  return {
-    base: basePath,
-    plugins: [
-      react(),
-      tailwindcss(),
-      runtimeErrorOverlay(),
-      ...(process.env.NODE_ENV !== "production" &&
-      process.env.REPL_ID !== undefined
-        ? [
-            (async () =>
-              (await import("@replit/vite-plugin-cartographer")).cartographer({
-                root: path.resolve(import.meta.dirname, ".."),
-              }))(),
-            (async () =>
-              (await import("@replit/vite-plugin-dev-banner")).devBanner())(),
-          ]
-        : []),
-    ],
-    define: {
-      'process.env.GEMINI_API_KEY': JSON.stringify(env.GEMINI_API_KEY || ''),
-    },
-    resolve: {
-      alias: {
-        "@": path.resolve(import.meta.dirname, "src"),
-        "@assets": path.resolve(import.meta.dirname, "..", "..", "attached_assets"),
+export default defineConfig({
+  plugins: [
+    react(),
+    tailwindcss(),
+  ],
+  root: __dirname,
+  build: {
+    // İstemci (client) build çıktısı için
+    outDir: resolve(__dirname, '../../dist/public'),
+    emptyOutDir: true, // Önceki build dosyalarını temizler
+    rollupOptions: {
+      input: {
+        main: resolve(__dirname, 'index.html'),
       },
-      dedupe: ["react", "react-dom"],
+      // Sunucu (server) build'i için ek yapılandırma
+      output: {
+        entryFileNames: `assets/[name].js`,
+        chunkFileNames: `assets/[name].js`,
+        assetFileNames: `assets/[name].[ext]`
+      }
     },
-    root: path.resolve(import.meta.dirname),
-    build: {
-      outDir: path.resolve(import.meta.dirname, "dist/public"),
-      emptyOutDir: true,
-    },
-    server: {
-      port,
-      strictPort: true,
-      host: "0.0.0.0",
-      allowedHosts: true,
-      fs: {
-        strict: true,
-      },
-    },
-    preview: {
-      port,
-      host: "0.0.0.0",
-      allowedHosts: true,
-    },
-  };
+    // Sunucu build'i için SSR (Server-Side Rendering) yapılandırması
+    ssr: 'server-production.ts',
+    ssrManifest: true,
+  },
 });
