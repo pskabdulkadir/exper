@@ -21,5 +21,10 @@ export default defineConfig({
         main: resolve(__dirname, 'index.html'),
       },
     },
+    // Sunucu tarafı derlemesi (SSR) için giriş noktasını belirtir.
+    // Bu, Vite'ın `esbuild` yerine sunucu kodunu derlemesini sağlar.
+    ssr: resolve(__dirname, '../../server-production.ts'),
+    // Sunucu derlemesi için SSR manifesti oluşturulur.
+    ssrManifest: true,
   },
 });
