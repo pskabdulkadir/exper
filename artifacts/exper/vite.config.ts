@@ -28,7 +28,7 @@ export default defineConfig({
       }
     },
     // Sunucu build'i için SSR (Server-Side Rendering) yapılandırması
-    ssr: 'server-production.ts',
+    ssr: resolve(__dirname, '../../server-production.ts'),
     ssrManifest: true,
   },
 });
