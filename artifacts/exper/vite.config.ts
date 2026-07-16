@@ -20,15 +20,6 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
       },
-      // Sunucu (server) build'i için ek yapılandırma
-      output: {
-        entryFileNames: `assets/[name].js`,
-        chunkFileNames: `assets/[name].js`,
-        assetFileNames: `assets/[name].[ext]`
-      }
     },
-    // Sunucu build'i için SSR (Server-Side Rendering) yapılandırması
-    ssr: resolve(__dirname, '../../server-production.ts'),
-    ssrManifest: true,
   },
 });
