@@ -20,6 +20,13 @@ export default defineConfig({
       input: {
         main: resolve(__dirname, 'index.html'),
       },
+      output: {
+        // Sunucu derlemesi için SSR manifesti oluşturulur.
+        // Bu, sunucunun hangi istemci varlıklarını yükleyeceğini bilmesini sağlar.
+        ssrManifest: true,
+      }
     },
+    // Sunucu tarafı derlemesi (SSR) için giriş noktasını belirtir.
+    ssr: resolve(__dirname, '../../server-production.ts'),
   },
 });
